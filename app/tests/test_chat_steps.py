@@ -27,6 +27,17 @@ const i = chat.indexOf('function srcHref('), j = chat.indexOf('\n  /* markdown-l
 const srcCards = new Function(helpers + '\n' + chat.slice(i, j) + '\nreturn srcCards;')();
 process.stdout.write(JSON.stringify(JSON.parse(process.argv[3]).map(s => srcCards([s], false))));
 """
+# srcFilter, the type buttons above an answer's sources, from the same part of chat.js. Each input is one answer's list.
+FILTER = r"""
+const fs = require('fs');
+const chat = fs.readFileSync(process.argv[1], 'utf8'), app = fs.readFileSync(process.argv[2], 'utf8');
+const line = re => app.split('\n').find(l => re.test(l));
+const helpers = [line(/^const esc\s*=/), line(/^const fileUrl\s*=/), "const ico = n => '<svg>' + n + '</svg>';",
+  'const clock = t => String(t);', "const here = () => '#/ask';"].join('\n');
+const i = chat.indexOf('function srcHref('), j = chat.indexOf('\n  /* markdown-lite');
+const srcFilter = new Function(helpers + '\n' + chat.slice(i, j) + '\nreturn srcFilter;')();
+process.stdout.write(JSON.stringify(JSON.parse(process.argv[3]).map(list => srcFilter(list))));
+"""
 
 
 class Anchors(html.parser.HTMLParser):
@@ -147,7 +158,8 @@ class SourceCards(unittest.TestCase):
         p.feed(card)
         self.assertEqual(len(p.anchors), 1, card)
         a = p.anchors[0]
-        self.assertEqual(set(a), {'class', 'href', 'id'}, card)   # nothing like onmouseover got in
+        self.assertEqual(set(a), {'class', 'href', 'id', 'data-type'}, card)   # nothing like onmouseover got in
+        self.assertEqual(a['data-type'], 'wiki', card)
         href = a['href']
         self.assertTrue(href.startswith('#/wiki/'), href)
         # As app.js parse() reads it: the address ends at the first ?, then each part is decoded.
@@ -179,6 +191,78 @@ class SourceCards(unittest.TestCase):
         p.feed(got[0] + got[1])
         self.assertEqual(p.anchors[0]['href'], '#/read/fema%20water?p=3&from=%23%2Fask')
         self.assertEqual(p.anchors[1]['href'], '#/map?lat=1.5&lon=2.5&z=16&pin=Clinic%20%22A%22')
+
+    def test_each_card_says_its_type(self):
+        got = self.cards([{'kind': 'pdf', 'key': 'S1', 'title': 'A', 'doc_id': 'a', 'page': 3},
+                          {'kind': 'html', 'key': 'S2', 'title': 'B', 'doc_id': 'b'},
+                          {'kind': 'video', 'key': 'S3', 'title': 'C', 'doc_id': 'c', 't': 12},
+                          {'kind': 'zim', 'key': 'S4', 'title': 'D', 'zim': f'zim/{ZIM}/D'},
+                          {'kind': 'place', 'key': 'M1', 'title': 'E', 'lat': 1, 'lon': 2}])
+        types = []
+        for card in got:
+            p = Anchors()
+            p.feed(card)
+            types.append(p.anchors[0]['data-type'])
+        self.assertEqual(types, ['page', 'page', 'video', 'wiki', 'place'])
+
+
+class Buttons(html.parser.HTMLParser):
+    def __init__(self):
+        super().__init__()
+        self.buttons, self.group, self._at = [], None, None
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'div' and dict(attrs).get('class') == 'srcfilter':
+            self.group = dict(attrs)
+        if tag == 'button':
+            self._at = dict(attrs)
+            self.buttons.append([self._at, ''])
+
+    def handle_endtag(self, tag):
+        if tag == 'button':
+            self._at = None
+
+    def handle_data(self, data):
+        if self._at is not None:
+            self.buttons[-1][1] += data
+
+
+@unittest.skipUnless(NODE, 'needs Node')
+class SourceFilter(unittest.TestCase):
+    def filters(self, lists):
+        r = subprocess.run([NODE, '-e', FILTER, str(ROOT / 'web/chat.js'), str(ROOT / 'web/app.js'), json.dumps(lists)],
+                           capture_output=True, text=True, check=True, encoding='utf-8')
+        return json.loads(r.stdout)
+
+    def parse(self, h):
+        p = Buttons()
+        p.feed(h)
+        return p
+
+    def test_one_button_per_type_present_with_counts_in_a_fixed_order(self):
+        mixed = [{'kind': 'place', 'key': 'M1'}, {'kind': 'pdf', 'key': 'S1'}, {'kind': 'video', 'key': 'S2'},
+                 {'kind': 'pdf', 'key': 'S3'}, {'kind': 'pptx', 'key': 'S4'}, {'kind': 'zim', 'key': 'S5'}]
+        p = self.parse(self.filters([mixed])[0])
+        self.assertEqual(p.group.get('role'), 'group')
+        self.assertTrue(p.group.get('aria-label'))
+        got = [(a['data-type'], a['aria-pressed'], ' '.join(t.split())) for a, t in p.buttons]
+        self.assertEqual(got, [('', 'true', 'All 6'), ('page', 'false', 'Pages 3'), ('video', 'false', 'Videos 1'),
+                               ('wiki', 'false', 'Encyclopedias 1'), ('place', 'false', 'Places 1')])
+        for a, _ in p.buttons:
+            self.assertEqual(a.get('type'), 'button')   # inside the chat page, never a submit
+
+    def test_types_with_no_sources_get_no_button(self):
+        p = self.parse(self.filters([[{'kind': 'pdf', 'key': 'S1'}, {'kind': 'video', 'key': 'S2'}, {'kind': 'video', 'key': 'S3'}]])[0])
+        self.assertEqual([a['data-type'] for a, _ in p.buttons], ['', 'page', 'video'])
+
+    def test_no_filter_when_there_is_nothing_to_choose(self):
+        got = self.filters([[], [{'kind': 'pdf', 'key': 'S1'}], [{'kind': 'pdf', 'key': 'S1'}, {'kind': 'html', 'key': 'S2'}],
+                            [{'kind': 'video', 'key': 'S1'}, {'kind': 'video', 'key': 'S2'}]])
+        self.assertEqual(got, ['', '', '', ''])
+
+    def test_an_encyclopedia_row_without_a_kind_counts_as_an_encyclopedia(self):
+        p = self.parse(self.filters([[{'key': 'S1', 'zim': f'zim/{ZIM}/X'}, {'kind': 'pdf', 'key': 'S2'}]])[0])
+        self.assertEqual([a['data-type'] for a, _ in p.buttons], ['', 'page', 'wiki'])
 
 
 if __name__ == '__main__':
