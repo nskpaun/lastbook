@@ -348,12 +348,12 @@ const Chat = (() => {
     if (m.error) h += `<div class="ans-error">${ico('warn')}<div><b>${esc(m.error)}</b>${m.offline ? '<p>You can keep browsing and searching. Here are the pages that best match your question:</p>' : ''}</div></div>`;
     if (m.content) h += `<div class="answer">${md(m.content, m)}</div>`;
     if (running && found.length) h += `<div class="prefound"><p class="small muted">Pages found so far — you can open them while the answer is written:</p>${srcCards(found.slice(0, 6), true)}</div>`;
-    if (m.fallback) h += srcCards(m.fallback, true);
+    if (m.fallback) h += srcFilter(m.fallback) + srcCards(m.fallback, true);
     if (!running && m.content) {
       const cited = sourcesForFinish(m);
       if ((m.invalid || []).length) h += `<p class="small" style="color:var(--stop)">The model referred to sources that don’t exist (${m.invalid.join(', ')}); those markers were removed.</p>`;
       h += `<div class="legend small"><span><span class="lg-c">1</span> linked to a page or video</span><span><span class="lg-u">dotted</span> the model’s own wording, not linked to a source</span></div>`;
-      if (cited.length) h += `<h3 class="srch">Sources (${cited.length})</h3>${srcCards(cited, false)}`;
+      if (cited.length) h += `<h3 class="srch">Sources (${cited.length})</h3>${srcFilter(cited)}${srcCards(cited, false)}`;
       else h += `<p class="notice small">This answer has no linked sources. Treat it as unverified.</p>`;
       const other = (m.consulted || []).filter(s => s.kind !== 'place');
       if (other.length) h += `<details class="also"><summary>Also looked at (${other.length}, not used)</summary>${srcCards(other.slice(0, 10), true)}</details>`;
@@ -392,6 +392,9 @@ const Chat = (() => {
     }
     return `#/read/${encodeURIComponent(s.doc_id)}?${s.page ? 'p=' + s.page + '&' : ''}from=${encodeURIComponent(here())}`;
   }
+  // What a source is, for the filter above an answer's sources: a page (manuals, PDFs, saved pages), a video, an encyclopedia article or a place on the map.
+  const SRC_TYPES = [['page', 'Pages'], ['video', 'Videos'], ['wiki', 'Encyclopedias'], ['place', 'Places']];
+  const srcType = s => s.kind === 'video' ? 'video' : s.kind === 'zim' || s.zim ? 'wiki' : s.kind === 'place' ? 'place' : 'page';
   function srcCards(list, compact) {
     return `<div class="srccards ${compact ? 'compact' : ''}">${list.map(s => {
       let pv;
@@ -399,11 +402,25 @@ const Chat = (() => {
       else if (s.kind === 'pdf' && s.page) pv = `<span class="pv"><img loading="lazy" alt="" src="/api/page/${encodeURIComponent(s.doc_id)}/${s.page}.png?w=300" onerror="this.remove()"><span class="pg">p. ${s.page}</span></span>`;
       else pv = `<span class="pv w">${ico(s.kind === 'zim' || s.zim ? 'wiki' : s.kind === 'place' ? 'pin' : 'page')}</span>`;
       const where = s.kind === 'video' ? (s.t != null ? 'at ' + clock(s.t) : '') : s.page ? `page ${s.page}${s.pages ? ' of ' + s.pages : ''}` : '';
-      return `<a class="srccard" href="${esc(srcHref(s))}" id="src-${esc(s.key || '')}">${pv}<span class="sc-body">${s.key ? `<span class="sc-key">${esc(s.key.replace(/^S/, ''))}</span>` : ''}<b>${esc(s.title)}</b>
+      return `<a class="srccard" href="${esc(srcHref(s))}" id="src-${esc(s.key || '')}" data-type="${srcType(s)}">${pv}<span class="sc-body">${s.key ? `<span class="sc-key">${esc(s.key.replace(/^S/, ''))}</span>` : ''}<b>${esc(s.title)}</b>
         <small>${esc(s.publisher || '')}${s.year ? ' · ' + esc(s.year) : ''}${where ? ' · ' + where : ''}${s.trust ? ' · ' + esc(s.trust) : ''}</small>
         ${!compact && s.excerpt ? `<span class="sc-ex">“${esc(s.excerpt.slice(0, 220))}${s.excerpt.length > 220 ? '…' : ''}”</span>` : ''}
         ${s.image ? '<span class="sc-tag">diagram viewed</span>' : ''}</span></a>`;
     }).join('')}</div>`;
+  }
+  // Buttons that show one type of source at a time, with how many of each. Only when the sources are of two types or more.
+  function srcFilter(list) {
+    const n = {}; for (const s of list) n[srcType(s)] = (n[srcType(s)] || 0) + 1;
+    const types = SRC_TYPES.filter(([t]) => n[t]);
+    if (types.length < 2) return '';
+    const btn = (t, label, count) => `<button type="button" class="chip" data-type="${t}" aria-pressed="${t ? 'false' : 'true'}">${label} <small>${count}</small></button>`;
+    return `<div class="srcfilter" role="group" aria-label="Show sources by type">${btn('', 'All', list.length)}${types.map(([t, label]) => btn(t, label, n[t])).join('')}</div>`;
+  }
+  // Show only the cards of one type (or all of them, for ''), in the cards that follow this filter.
+  function showType(filter, type) {
+    $$('button', filter).forEach(b => b.setAttribute('aria-pressed', String(b.dataset.type === type)));
+    const cards = filter.nextElementSibling;
+    if (cards) $$('.srccard', cards).forEach(c => { c.hidden = !!type && c.dataset.type !== type });
   }
 
   /* markdown-lite with citation chips; sentences without a citation are marked as the model's own wording */
@@ -481,8 +498,9 @@ const Chat = (() => {
       if (b.dataset.act === 'export') exportChat(cur);
       if (b.dataset.act === 'retry') { const q = cur.messages[cur.messages.length - 2]?.content; cur.messages.splice(-2, 2); send(q) }
     });
-    // citation chips scroll to their card instead of changing the route
-    $$('a.cite', el).forEach(a => a.onclick = e => { e.preventDefault(); const c = $('#src-' + a.dataset.key, el.closest('.msg') || el); if (c) { c.scrollIntoView({ block: 'center', behavior: 'smooth' }); c.classList.add('flash'); setTimeout(() => c.classList.remove('flash'), 1200) } });
+    $$('.srcfilter button', el).forEach(b => b.onclick = () => showType(b.parentNode, b.dataset.type));
+    // citation chips scroll to their card instead of changing the route; a card the filter hides comes back with all the others
+    $$('a.cite', el).forEach(a => a.onclick = e => { e.preventDefault(); const c = $('#src-' + a.dataset.key, el.closest('.msg') || el); if (c && c.hidden) { const f = c.parentNode.previousElementSibling; if (f && f.matches('.srcfilter')) showType(f, '') } if (c) { c.scrollIntoView({ block: 'center', behavior: 'smooth' }); c.classList.add('flash'); setTimeout(() => c.classList.remove('flash'), 1200) } });
   }
   function plain(m) {
     const map = Object.fromEntries((m.cited || []).map(s => [s.key, s]));

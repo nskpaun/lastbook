@@ -839,6 +839,10 @@ body.v-ask main{padding-bottom:0}
 .sc-key{float:right;margin-left:6px;min-width:20px;height:20px;border-radius:6px;background:var(--accent-soft);color:var(--accent);font:700 12px/20px var(--font);text-align:center;padding:0 4px}
 .sc-ex{display:block;margin-top:5px;color:var(--ink2);font-size:13.5px;font-style:italic}
 .sc-tag{display:inline-block;margin-top:4px;font-size:11.5px;font-weight:700;color:var(--accent);text-transform:uppercase;letter-spacing:.04em}
+.srccard[hidden]{display:none}
+.srcfilter{display:flex;flex-wrap:wrap;gap:6px;margin:0 0 10px}
+.srcfilter .chip{min-height:32px;padding:4px 12px;font-size:14px}
+.srcfilter .chip small{font-size:12.5px;font-weight:600;opacity:.7}
 .srccards.compact .srccard{grid-template-columns:44px 1fr;padding:7px}
 .prefound{margin-top:10px}
 details.also{margin-top:10px;font-size:15px}
